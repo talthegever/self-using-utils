@@ -10,13 +10,22 @@ input: string built like: '<num><space><num><space><num><space><num><space>'
 output: string describing the actions needed to happen in order to solve the level"""
 
 from typing import List
+from itertools import permutations, combinations_with_replacement, chain, product
+from sympy import simplify, SympifyError
 
 NUMBERS_COUNT = 4
+TARGET = 10
+OPERATIONS = {"repeatable": "+-*/", "non-repeatable": "()"}
 
 
 def parse_input(numbers: str) -> List:
+    """
+    input: str that represent the 4 numbers expected
+    handle wrong input
+    return: list of the 4 numbers
+    """
     str_length = len(numbers)
-    expected_length = NUMBERS_COUNT*2-1
+    expected_length = NUMBERS_COUNT * 2 - 1
     if str_length == expected_length:  # space between every number
         try:
             numbers_list = [int(number) for number in numbers.split(' ')]
@@ -33,12 +42,59 @@ def parse_input(numbers: str) -> List:
     return []
 
 
+def try_all_orders(numbers: List, operators_options:List) -> str:
+    """
+    input: list of 4 numbers
+    changes the order of the numbers till the combination is possible
+    return: str that represents the operations needed to be done in order to reach target
+    """
+    for order in list(permutations(numbers)):
+        result = try_all_operations_on_specific_order(list(order), operators_options)
+        if result:
+            return result
+    return ''
+
+
+def try_all_operations_on_specific_order(numbers: List, operators_options:List) -> str:
+    """
+    input: 4 numbers list
+    trying all operations on this specific order of numbers
+    return:str of the solution, if there is one
+    """
+    for option in operators_options:
+        exercise_str = create_exercise_from_operators_and_numbers(numbers, option)
+        if calc_str_equal_target(exercise_str):
+            return exercise_str
+    return ''
+
+
+def create_exercise_from_operators_and_numbers(numbers: List, operators:List) -> str:
+    exercise = ''
+    for i in range(len(operators)):
+        exercise += str(numbers[i]) + operators[i]
+    exercise += str(numbers[-1])
+    return exercise
+
+
+def get_all_operation_order_options_without_parentheses() -> List:
+    """
+    return: list of all options to place the math operators, without using parentheses
+    """
+    return list(product(list(OPERATIONS["repeatable"]), repeat=NUMBERS_COUNT-1))
+
+
+def calc_str_equal_target(excercise: str) -> int:
+    try:
+        return simplify(excercise) == TARGET
+    except SympifyError:
+        return False
 
 
 def main():
     numbers = parse_input(input("enter your 4 digits with spaces between them:\n"))
     if numbers:
-        print(numbers)
+        solution = try_all_orders(numbers, get_all_operation_order_options_without_parentheses())
+    print(solution) if solution else print("couldn't find solution")
 
 
 if __name__ == '__main__':
