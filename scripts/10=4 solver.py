@@ -105,10 +105,11 @@ def calc_str_equal_target(excercise: str) -> int:
 
 
 def main():
-    numbers = parse_input(input("enter your 4 digits with spaces between them:\n"))
-    if numbers:
-        solution = try_all_orders(numbers, get_all_operation_order_options())
-        print(solution) if solution else print("couldn't find solution")
+    while True:
+        numbers = parse_input(input("enter your 4 digits with spaces between them:\n"))
+        if numbers:
+            solution = try_all_orders(numbers, get_all_operation_order_options())
+            print(solution) if solution else print("couldn't find solution")
 
 
 if __name__ == '__main__':
