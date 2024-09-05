@@ -49,7 +49,7 @@ def try_all_orders(numbers: List, operators_options: List) -> str:
     changes the order of the numbers till the combination is possible
     return: str that represents the operations needed to be done in order to reach target
     """
-    for order in tqdm(list(permutations(numbers))):
+    for order in tqdm(set(permutations(numbers))):
         result = try_all_operations_on_specific_order(list(order), operators_options)
         if result:
             return result
