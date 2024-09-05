@@ -10,9 +10,10 @@ input: string built like: '<num><space><num><space><num><space><num><space>'
 output: string describing the actions needed to happen in order to solve the level"""
 
 from typing import List
-from itertools import permutations, product
+from itertools import permutations, product,combinations_with_replacement
 from sympy import simplify, SympifyError
 from tqdm import tqdm
+from datetime import datetime
 
 NUMBERS_COUNT = 4
 TARGET = 10
@@ -110,6 +111,13 @@ def main():
         if numbers:
             solution = try_all_orders(numbers, get_all_operation_order_options())
             print(solution) if solution else print("couldn't find solution")
+
+"""this is code for retrieving all possible exercises"""
+# start = datetime.now()
+# for comb in combinations_with_replacement(range(1,10), 4):
+#     solution = try_all_orders(comb, get_all_operation_order_options())
+#     print(solution) if solution else print(f"---------------------------{comb}----------------------------")
+# print(datetime.now()-start)
 
 
 if __name__ == '__main__':
