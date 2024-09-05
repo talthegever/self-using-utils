@@ -12,6 +12,7 @@ output: string describing the actions needed to happen in order to solve the lev
 from typing import List
 from itertools import permutations, product
 from sympy import simplify, SympifyError
+from tqdm import tqdm
 
 NUMBERS_COUNT = 4
 TARGET = 10
@@ -48,7 +49,7 @@ def try_all_orders(numbers: List, operators_options: List) -> str:
     changes the order of the numbers till the combination is possible
     return: str that represents the operations needed to be done in order to reach target
     """
-    for order in list(permutations(numbers)):
+    for order in tqdm(list(permutations(numbers))):
         result = try_all_operations_on_specific_order(list(order), operators_options)
         if result:
             return result
