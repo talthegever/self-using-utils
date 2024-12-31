@@ -1,0 +1,1 @@
+python "C:\Users\Lenovo\Desktop\code\self-using-utils\scripts\price_for_mishtaken.py"
