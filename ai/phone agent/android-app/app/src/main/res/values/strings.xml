@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">PhoneAgent</string>
+    <string name="accessibility_service_description">Lets PhoneAgent close an app you name, by dismissing it from the recent apps screen. Only acts when you ask it to close an app.</string>
+    <string name="reminder_channel_name">Reminders</string>
+    <string name="reminder_channel_description">Reminders you asked PhoneAgent to set</string>
+</resources>

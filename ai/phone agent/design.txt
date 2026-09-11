@@ -1,0 +1,313 @@
+PhoneAgent — Local Phone Assistant
+Design Document v1
+====================================================================
+
+1. OVERVIEW & VISION
+--------------------
+PhoneAgent is a local, privacy-respecting alternative to Siri/Bixby for a
+Poco (Android) phone, built because no existing Play Store app fits this
+need and a closed-source cloud assistant is not acceptable.
+
+The system is split into two parts:
+  - An installed Android app that owns the microphone, the UI, and all
+    execution of actions on the phone.
+  - A small local server running on the user's PC that owns "understanding"
+    — turning a spoken/typed command into a structured intent using a
+    local LLM (no cloud AI, no paid API).
+
+The dividing line between the two is deliberate: the AI's job stops at
+understanding. It never decides what code runs. Execution is handled by
+a fixed, deterministic dispatcher on the phone that only ever performs
+one of a small, enumerable set of actions.
+
+
+2. GOALS / NON-GOALS (v1)
+--------------------------
+Goals:
+  - Speak or type a command on the phone.
+  - Correctly map it to exactly one of a fixed set of intents.
+  - Deterministically execute that intent using real Android APIs.
+  - Fail safely: anything not confidently understood does nothing and
+    tells the user it didn't understand, rather than guessing.
+
+Non-goals for v1 (see section 13 for roadmap):
+  - Reading the screen.
+  - Reading notifications / incoming messages.
+  - Always-on listening / wake word.
+  - Spoken (text-to-speech) responses.
+  - Running the understanding model on the phone itself.
+
+
+3. HIGH-LEVEL ARCHITECTURE
+---------------------------
+
+    [User speaks or types]
+            |
+            v
+    SpeechRecognizer (Android, on-device app)
+            |  transcript (plain text)
+            v
+    BrainClient  --- HTTP POST /parse-intent { "text": "..." } --->  PC Brain Server
+            |                                                              |
+            |                                                     local Ollama model
+            |                                                     (text -> intent)
+            |                                                              |
+            |                                                    Pydantic schema
+            |                                                    validation; anything
+            |                                                    non-conforming ->
+            |                                                    "Unknown"
+            |  <---  { "intent": "...", "slots": {...} }  -------------|
+            v
+    ActionIntent (Kotlin sealed class; compiler-enforced fixed set)
+            |
+            v
+    On-device resolver (app name -> package, contact name -> phone number)
+            |
+            v
+    ActionExecutor — deterministic `when` dispatch, one fixed function per
+    intent, each calling a specific Android system API directly
+            |
+            v
+    Result shown in the app's log ("heard -> understood -> did")
+
+Key property: the PC server's only contract is text-in, bounded-JSON-out.
+It never receives or issues execution instructions, and the phone never
+executes anything the schema validator did not approve. If the model
+hallucinates or outputs something outside the schema, the server coerces
+it to "Unknown" before it ever reaches the phone, and the phone independently
+double-checks the shape before dispatch.
+
+
+4. ANDROID APP COMPONENTS (Kotlin)
+------------------------------------
+ui/
+    Single-screen UI: text input box + mic button, a scrollable log showing
+    "heard -> understood -> did" for each command, plus a Settings screen
+    to configure the PC server's address.
+
+speech/SpeechModule.kt
+    Wraps Android's SpeechRecognizer. Exposes a plain-text transcript to
+    the rest of the app. No NLU logic lives here.
+
+network/BrainClient.kt
+    Retrofit/OkHttp client. POSTs the transcript to the PC Brain Server's
+    /parse-intent endpoint and parses the JSON response.
+
+intent/ActionIntent.kt
+    A Kotlin sealed class mirroring the fixed schema exactly:
+    OpenApp, CloseApp, Call, CreateCalendarEvent, CreateReminder, Unknown.
+    Because it's a sealed class, the Kotlin compiler forces every `when`
+    dispatch to handle all cases — there is no way to add an "other" or
+    freeform action without a compile error.
+
+resolver/
+    Deterministic, on-device resolution helpers:
+      - app name -> package name, via PackageManager
+      - contact name -> phone number, via ContactsContract
+    The PC model only ever returns raw slot text (e.g. app_name: "spotify").
+    All fuzzy matching against what's actually installed / actually in
+    the user's contacts happens on-device in Kotlin, never in the model.
+
+action/ActionExecutor.kt
+    Deterministic `when` dispatch over ActionIntent. Each branch is a
+    small, independently testable function that calls one specific
+    Android API. No branch is built dynamically from model output.
+
+permissions/PermissionManager.kt
+    Requests and checks every permission listed in section 5.
+
+settings/
+    Stores the PC server's IP:port (SharedPreferences/DataStore).
+
+
+5. DETERMINISTIC ACTION SET (v1)
+-----------------------------------------------------------------------------
+Intent               Required slots         Android mechanism                          Permission(s)                       Notes / limitations
+-----------------------------------------------------------------------------
+OpenApp               app_name               PackageManager.getLaunchIntentForPackage    QUERY_ALL_PACKAGES (or normal        Resolved on-device
+                                              + startActivity                             query-intent visibility on API 30+)  against installed
+                                                                                                                               package list.
+
+CloseApp               app_name               AccessibilityService simulating a           Accessibility Service must be        Android does not let a
+                                               recent-apps dismiss gesture                 manually enabled by the user in      normal app force-stop
+                                                                                            system Settings                      another app without root
+                                                                                                                                  or an Accessibility
+                                                                                                                                  Service. This is a real
+                                                                                                                                  platform limitation, not
+                                                                                                                                  a bug — documented so it
+                                                                                                                                  isn't rediscovered later.
+
+Call                    contact_name OR       Intent(ACTION_DIAL) opens the dialer         None for DIAL. CALL_PHONE only        v1 defaults to DIAL
+                        phone_number          pre-filled with the number                   if later upgraded to ACTION_CALL       (user confirms the call)
+                                                                                                                                  for safety, since this
+                                                                                                                                  is untested in v1.
+
+CreateCalendarEvent     title, start_time,    CalendarContract.Events content provider     READ_CALENDAR, WRITE_CALENDAR
+                        [end_time]            insert
+
+CreateReminder          title, time           AlarmManager.setExactAndAllowWhileIdle       SCHEDULE_EXACT_ALARM,                 Fires the app's own
+                                               + a local notification                      POST_NOTIFICATIONS                    notification; not tied
+                                                                                                                                  to any other app.
+
+Unknown                 —                     Show "didn't understand" in the UI and ask  —                                     Any transcript that
+                                               "could you say that again?"; if the         doesn't validate against
+                                               command came from voice, automatically      the schema lands here —
+                                               re-open the mic for a hands-free retry      never a best-guess action.
+-----------------------------------------------------------------------------
+
+Same rule applies to any other ExecutionResult.Failure, not just Unknown (e.g.
+"no installed app matches that name") - a failed command always prompts for
+clarification instead of silently dropping it. This is still deterministic:
+it's a fixed rule (on Failure, ask again) rather than the model guessing at
+what the user meant.
+
+
+6. FIXED INTENT JSON SCHEMA
+------------------------------
+Every response from the PC Brain Server is exactly one of:
+
+    {"intent": "OpenApp", "slots": {"app_name": "spotify"}}
+    {"intent": "CloseApp", "slots": {"app_name": "spotify"}}
+    {"intent": "Call", "slots": {"contact_name": "mom"}}
+    {"intent": "Call", "slots": {"phone_number": "+15551234567"}}
+    {"intent": "CreateCalendarEvent", "slots": {"title": "dentist", "start_time": "2026-09-11T15:00:00", "end_time": "2026-09-11T15:30:00"}}
+    {"intent": "CreateReminder", "slots": {"title": "take out trash", "time": "2026-09-10T18:00:00"}}
+    {"intent": "Unknown", "slots": {}}
+
+The PC server validates the model's raw output against exactly these
+shapes using Pydantic models. Anything that fails validation — missing
+required slots, an intent name outside the enum, malformed JSON — is
+coerced to {"intent": "Unknown", "slots": {}} server-side before it is
+ever returned. This is what keeps execution deterministic despite an
+LLM being in the loop: the LLM proposes, the schema disposes.
+
+
+7. PC BRAIN SERVER
+---------------------
+- Python 3.11+, FastAPI + Uvicorn.
+- Single endpoint: POST /parse-intent  { "text": "<transcript>" }
+  returns one of the 7 JSON shapes in section 6.
+- Calls a local Ollama model (e.g. qwen2.5:7b-instruct or llama3.1:8b)
+  with a system prompt that enumerates exactly the 6 allowed intents and
+  their slots, and instructs the model to output nothing else.
+- The raw model response is parsed and validated with Pydantic; anything
+  non-conforming is coerced to Unknown (belt-and-suspenders with the
+  phone-side schema check in section 4/6).
+- Binds to the LAN only (--host 0.0.0.0 on the home network); never
+  exposed to the internet. The phone stores the PC's LAN IP in its
+  Settings screen.
+
+
+8. LANGUAGE & TOOLING SUMMARY
+--------------------------------
+Android app:
+    Kotlin
+    Android Studio
+    Gradle (Kotlin DSL)
+    Min SDK 26+ (Android 8.0), target latest available SDK
+    Retrofit + OkHttp for networking
+    kotlinx.serialization for JSON
+
+PC Brain Server:
+    Python 3.11+
+    FastAPI
+    Uvicorn
+    Pydantic (schema validation)
+    Ollama Python client
+
+Local model runtime:
+    Ollama (runs entirely on the PC, no cloud calls)
+
+
+9. INSTALLATION / SETUP REQUIREMENTS
+---------------------------------------
+On the PC:
+    1. Install Android Studio (bundles the JDK and Android SDK needed to
+       build the app).
+    2. Install Python 3.11+.
+    3. Install Ollama, then pull a tool-calling-capable model, e.g.:
+           ollama pull qwen2.5:7b-instruct
+    4. Run the brain server: uvicorn brain.main:app --host 0.0.0.0 --port 8787
+
+On the phone (Poco):
+    The app is not distributed via the Play Store, so it's sideloaded:
+    1. Build the APK in Android Studio.
+    2. Install it via `adb install` (USB debugging is already enabled),
+       or transfer the APK file directly and enable "Install unknown
+       apps" for that source.
+    3. On first run, manually grant the requested runtime permissions.
+    4. Manually enable the app under Settings > Accessibility (required
+       for CloseApp — Android does not allow an app to silently enroll
+       itself as an Accessibility Service).
+    5. In the app's Settings screen, enter the PC's LAN IP and port.
+
+Network:
+    The phone and PC must be on the same wifi network. Recommended: give
+    the PC a static local IP or a DHCP reservation on the router so the
+    address saved on the phone doesn't break when the PC's IP changes.
+
+
+10. PROJECT / REPO STRUCTURE
+-------------------------------
+phone agent/
+    design.txt
+    android-app/          (Kotlin/Gradle project — created when building starts)
+        app/src/main/java/.../ui/
+        app/src/main/java/.../speech/
+        app/src/main/java/.../network/
+        app/src/main/java/.../intent/
+        app/src/main/java/.../resolver/
+        app/src/main/java/.../action/
+        app/src/main/java/.../permissions/
+        app/src/main/java/.../settings/
+    brain-server/          (Python/FastAPI project)
+        brain/main.py
+        brain/schema.py
+        brain/model_client.py
+        requirements.txt
+
+
+11. TESTING / VERIFICATION PLAN
+-----------------------------------
+- Unit-test ActionExecutor's dispatch logic and the Pydantic schema
+  validation independently of any hardware.
+- Manually test each permission-gated action in isolation before wiring
+  up speech: open an app, dial a number, insert a calendar event, fire a
+  reminder notification.
+- Test the brain server directly with curl/pytest: send sample transcripts
+  and confirm the returned JSON matches the schema, including deliberately
+  ambiguous or garbled input, to confirm it returns Unknown rather than
+  guessing.
+- End-to-end manual pass: speak each of the 5 real intents plus one
+  nonsense phrase; confirm the correct action fires every time and the
+  nonsense phrase does nothing but report "didn't understand."
+
+
+12. SECURITY / PRIVACY NOTES
+--------------------------------
+- Android's built-in SpeechRecognizer typically sends audio to Google's
+  servers for transcription unless the device has an offline language
+  pack installed and selected. This is an explicit v1 tradeoff for ease
+  of integration. Vosk (fully offline, open-source) is the identified
+  future swap-in if this becomes unacceptable — see section 13.
+- The PC Brain Server has no internet-facing exposure; it only accepts
+  connections from devices on the local network.
+- No account, contact, or calendar data ever leaves the phone/PC LAN;
+  there is no cloud AI or third-party API involved in v1.
+
+
+13. V2 ROADMAP (explicitly deferred, not designed into v1)
+---------------------------------------------------------------
+- Screen reading via AccessibilityService (the feature that originally
+  motivated this project — reading what's on screen, e.g. messages).
+- Reading incoming notifications via NotificationListenerService.
+- Migrating "understanding" from the PC-hosted model to an on-device
+  model (e.g. via llama.cpp or MediaPipe LLM Inference), removing the
+  wifi/PC dependency entirely.
+- Swapping SpeechRecognizer for Vosk (fully offline STT) if the cloud
+  dependency in v1 is unacceptable.
+- Wake-word / always-listening mode.
+- Spoken (text-to-speech) responses.
+- Upgrading Call from ACTION_DIAL to direct ACTION_CALL once trusted.
+- A floating overlay/bubble UI instead of a single-screen app, for
+  faster invocation.
