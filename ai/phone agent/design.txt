@@ -187,7 +187,10 @@ LLM being in the loop: the LLM proposes, the schema disposes.
 - Python 3.11+, FastAPI + Uvicorn.
 - Single endpoint: POST /parse-intent  { "text": "<transcript>" }
   returns one of the 7 JSON shapes in section 6.
-- Calls a local Ollama model (e.g. qwen2.5:7b-instruct or llama3.1:8b)
+- Calls a local Ollama model (qwen2.5:3b-instruct - chosen for latency over
+  qwen2.5:7b-instruct, since this machine has no GPU and the 7b model's
+  ~11s/request was pure CPU-bound generation time, not load time; the 3b
+  model trades a little accuracy for a much faster round-trip)
   with a system prompt that enumerates exactly the 6 allowed intents and
   their slots, and instructs the model to output nothing else.
 - The raw model response is parsed and validated with Pydantic; anything
@@ -225,8 +228,8 @@ On the PC:
     1. Install Android Studio (bundles the JDK and Android SDK needed to
        build the app).
     2. Install Python 3.11+.
-    3. Install Ollama, then pull a tool-calling-capable model, e.g.:
-           ollama pull qwen2.5:7b-instruct
+    3. Install Ollama, then pull the model:
+           ollama pull qwen2.5:3b-instruct
     4. Run the brain server: uvicorn brain.main:app --host 0.0.0.0 --port 8787
 
 On the phone (Poco):

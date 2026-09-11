@@ -4,7 +4,7 @@ validation happens in schema.py after this returns."""
 
 import ollama
 
-MODEL_NAME = "qwen2.5:7b-instruct"
+MODEL_NAME = "qwen2.5:3b-instruct"
 
 SYSTEM_PROMPT = """You turn a spoken command into exactly one JSON object and nothing else.
 
