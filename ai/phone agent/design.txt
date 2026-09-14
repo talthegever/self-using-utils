@@ -187,12 +187,18 @@ LLM being in the loop: the LLM proposes, the schema disposes.
 - Python 3.11+, FastAPI + Uvicorn.
 - Single endpoint: POST /parse-intent  { "text": "<transcript>" }
   returns one of the 7 JSON shapes in section 6.
-- Calls a local Ollama model (qwen2.5:3b-instruct - chosen for latency over
-  qwen2.5:7b-instruct, since this machine has no GPU and the 7b model's
-  ~11s/request was pure CPU-bound generation time, not load time; the 3b
-  model trades a little accuracy for a much faster round-trip)
+- Calls a local Ollama model (currently qwen2.5:3b-instruct)
   with a system prompt that enumerates exactly the 6 allowed intents and
   their slots, and instructs the model to output nothing else.
+  MEASURED, not assumed: 3b was adopted hoping for lower latency vs.
+  qwen2.5:7b-instruct, but live testing showed no meaningful speedup
+  (9-36s per command either way, varying with command complexity). This
+  machine has no GPU, so the cost is CPU-bound token generation, which
+  does not scale down proportionally with parameter count. Latency is
+  therefore an OPEN PROBLEM, not a solved one - see SESSION_NOTES.md.
+- The model is warmed up at server startup (a cold load costs ~60-100s and
+  would otherwise be paid by the user's first real command, blowing past
+  the phone's HTTP timeout), and kept resident via keep_alive.
 - The raw model response is parsed and validated with Pydantic; anything
   non-conforming is coerced to Unknown (belt-and-suspenders with the
   phone-side schema check in section 4/6).
@@ -207,9 +213,11 @@ Android app:
     Kotlin
     Android Studio
     Gradle (Kotlin DSL)
-    Min SDK 26+ (Android 8.0), target latest available SDK
-    Retrofit + OkHttp for networking
+    Min SDK 26, compile/target SDK 34
+    OkHttp for networking (plain OkHttp, NOT Retrofit - one endpoint
+      doesn't justify Retrofit's interface/codegen layer)
     kotlinx.serialization for JSON
+    JDK 17 (Temurin) - see section 9 for why not the bundled JDK
 
 PC Brain Server:
     Python 3.11+
@@ -225,8 +233,11 @@ Local model runtime:
 9. INSTALLATION / SETUP REQUIREMENTS
 ---------------------------------------
 On the PC:
-    1. Install Android Studio (bundles the JDK and Android SDK needed to
-       build the app).
+    1. Install Android Studio (for the Android SDK). NOTE: do NOT build
+       with Android Studio's bundled JBR - the version shipped here is
+       JDK 25, which Gradle 8.9 rejects outright. Install Eclipse Temurin
+       JDK 17 separately and point JAVA_HOME at it. Builds are driven from
+       the command line via ./gradlew.bat, not the Studio GUI.
     2. Install Python 3.11+.
     3. Install Ollama, then pull the model:
            ollama pull qwen2.5:3b-instruct
@@ -253,30 +264,53 @@ Network:
 10. PROJECT / REPO STRUCTURE
 -------------------------------
 phone agent/
-    design.txt
-    android-app/          (Kotlin/Gradle project — created when building starts)
-        app/src/main/java/.../ui/
-        app/src/main/java/.../speech/
-        app/src/main/java/.../network/
-        app/src/main/java/.../intent/
-        app/src/main/java/.../resolver/
-        app/src/main/java/.../action/
-        app/src/main/java/.../permissions/
-        app/src/main/java/.../settings/
+    CLAUDE.md              (decisions/context for future sessions - read first)
+    design.txt             (this file - the intended architecture)
+    SESSION_NOTES.md       (what's actually been built/tested, and what hasn't)
+    android-app/           (Kotlin/Gradle project)
+        app/src/main/java/com/phoneagent/app/
+            ui/            (MainActivity, SettingsActivity)
+            speech/        (SpeechModule)
+            network/       (BrainClient)
+            intent/        (ActionIntent, IntentMapper)
+            resolver/      (AppResolver, ContactResolver)
+            action/        (ActionExecutor, ExecutionResult)
+            accessibility/ (CloseAppAccessibilityService)
+            reminder/      (ReminderScheduler, ReminderReceiver, NotificationHelper)
+            permissions/   (PermissionManager)
+            settings/      (SettingsStore)
+            util/          (Fuzzy)
+        app/src/test/      (plain-JVM unit tests - no device needed)
     brain-server/          (Python/FastAPI project)
-        brain/main.py
-        brain/schema.py
-        brain/model_client.py
+        brain/main.py, schema.py, model_client.py, logging_config.py
+        tests/
         requirements.txt
+    scripts/hooks/pre-push (test gate; see section 11)
 
 
 11. TESTING / VERIFICATION PLAN
 -----------------------------------
-- Unit-test ActionExecutor's dispatch logic and the Pydantic schema
-  validation independently of any hardware.
-- Manually test each permission-gated action in isolation before wiring
-  up speech: open an app, dial a number, insert a calendar event, fire a
-  reminder notification.
+Two tiers, split by what needs real hardware:
+
+TIER 1 - fast, automated, no device (this is the pre-push gate):
+    brain-server:  .venv/Scripts/python.exe -m pytest        (mocked model)
+    android-app:   ./gradlew.bat testDebugUnitTest
+  Covers: Pydantic schema validation/coercion, the /parse-intent endpoint,
+  model_client's warm-up + keep_alive wiring, logging config (incl. a
+  regression test for UTF-8 log mangling), and on the Kotlin side
+  IntentMapper, Fuzzy, ActionIntent, ExecutionResult.
+  Deliberately NOT unit-tested: ActionExecutor, AppResolver,
+  ContactResolver, CloseAppAccessibilityService. These need real Android
+  framework objects (PackageManager, ContentResolver, AccessibilityService).
+  Mocking them would test the mocks, not the behavior - they are validated
+  on-device instead. Do not add Robolectric for these without a reason.
+  The `live` pytest marker is excluded by default; `pytest -m live` runs a
+  single real-Ollama smoke test (server -> model -> schema-valid JSON).
+  Rationale: the model's judgment is not unit-testable; only the pipe is.
+
+TIER 2 - on a real device, manually:
+- Test each permission-gated action in isolation: open an app, dial a
+  number, insert a calendar event, fire a reminder notification.
 - Test the brain server directly with curl/pytest: send sample transcripts
   and confirm the returned JSON matches the schema, including deliberately
   ambiguous or garbled input, to confirm it returns Unknown rather than
@@ -290,9 +324,11 @@ phone agent/
 --------------------------------
 - Android's built-in SpeechRecognizer typically sends audio to Google's
   servers for transcription unless the device has an offline language
-  pack installed and selected. This is an explicit v1 tradeoff for ease
-  of integration. Vosk (fully offline, open-source) is the identified
-  future swap-in if this becomes unacceptable — see section 13.
+  pack installed and selected. This is an explicit, user-confirmed v1
+  tradeoff: speed and English-only beat privacy/multilingual here.
+  A fully-offline server-side alternative (faster-whisper) WAS built and
+  verified working, then deliberately reverted - it pushed a voice command
+  to ~24s round-trip. See CLAUDE.md before re-proposing it.
 - The PC Brain Server has no internet-facing exposure; it only accepts
   connections from devices on the local network.
 - No account, contact, or calendar data ever leaves the phone/PC LAN;
