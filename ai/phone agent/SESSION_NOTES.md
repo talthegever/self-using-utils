@@ -1,4 +1,26 @@
-# PhoneAgent — session summary (2026-09-08 to 2026-09-11)
+# PhoneAgent — session summary (2026-09-08 to 2026-09-11, docs updated 2026-09-14)
+
+**Read `CLAUDE.md` first** — it has the load-bearing decisions and why
+(especially: don't re-propose Whisper STT or a smaller model for speed,
+both were tried and measured, not just skipped). This file is the
+chronological log; `CLAUDE.md` is the "don't relitigate this" reference.
+
+## Current live state (as of 2026-09-14, will go stale — verify before trusting)
+
+- Brain server is **not running**. Start it with:
+  `.venv/Scripts/python.exe -m uvicorn brain.main:app --host 0.0.0.0 --port 8787 --reload`
+  (from `brain-server/`). First request after start pays a ~60-100s model
+  warm-up.
+- Both `qwen2.5:3b-instruct` and `qwen2.5:7b-instruct` are pulled and on
+  disk, but unloaded from memory (`ollama ps` shows nothing resident).
+- Phone is disconnected (wireless ADB session ends whenever the phone's
+  wifi-debugging port changes — re-pair when needed, see CLAUDE.md's
+  MIUI gotchas).
+- GitHub push auth is already stored in Git Credential Manager on this
+  machine — a plain `git push` should just work, no token needed again.
+- This machine's RAM is tight (16GB); a background process was OOM-killed
+  once this session. If things start failing mysteriously, check
+  `ollama ps` / free memory before debugging code.
 
 ## What got built
 
@@ -70,7 +92,9 @@ unused, in case you want to A/B compare accuracy later.
 Pushed to `talthegever/self-using-utils`, under `ai/phone agent/`:
 - `9c651b4` — v1 app + server (initial checkpoint)
 - `d7a5275` — test coverage + pre-push hook
-- `a86eca1` — qwen2.5:3b-instruct swap (current HEAD)
+- `a86eca1` — qwen2.5:3b-instruct swap
+- `7789329` — this file, first version
+- `075826a` — CLAUDE.md added, design.txt drift corrected (current HEAD)
 
 Nothing force-pushed, nothing deleted from what was already on the remote.
 
